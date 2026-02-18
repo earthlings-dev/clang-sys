@@ -1,25 +1,18 @@
 [package]
-
-edition = "2021"
-
+edition = "2024"
 name = "clang-sys"
 authors = ["Kyle Mayes <kyle@mayeses.com>"]
-
 version = "1.9.0"
-
 readme = "README.md"
 license = "Apache-2.0"
-
 description = "Rust bindings for libclang."
-
 documentation = "https://docs.rs/clang-sys"
 repository = "https://github.com/KyleMayes/clang-sys"
-
 links = "clang"
 build = "build.rs"
+rust-version = "1.93"
 
 [features]
-
 clang_3_5 = []
 clang_3_6 = ["clang_3_5"]
 clang_3_7 = ["clang_3_6"]
@@ -40,28 +33,28 @@ clang_15_0 = ["clang_14_0"]
 clang_16_0 = ["clang_15_0"]
 clang_17_0 = ["clang_16_0"]
 clang_18_0 = ["clang_17_0"]
+clang_19_0 = ["clang_18_0"]
+clang_20_0 = ["clang_19_0"]
+clang_21_0 = ["clang_20_0"]
+clang_22_0 = ["clang_21_0"]
+clang_23_0 = ["clang_22_0"]
 
 runtime = ["libloading"]
 static = []
-
 libcpp = []
 
 [dependencies]
-
 glob = "0.3"
-libc = { version = "0.2.39", default-features = false }
-libloading = { version = "0.8", optional = true }
+libc = { version = "0.2.182", default-features = false }
+libloading = { version = "0.9", optional = true }
 
 [build-dependencies]
-
 glob = "0.3"
 
 [dev-dependencies]
-
 glob = "0.3"
 lazy_static = "1"
-tempfile = ">=3.0.0, <3.7.0"
+tempfile = "3.25.0"
 
 [package.metadata.docs.rs]
-
-features = ["clang_18_0", "runtime"]
+features = ["clang_23_0", "runtime"]

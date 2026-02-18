@@ -20,16 +20,13 @@ thread_local! {
 /// Adds an error encountered by the build script while executing a command.
 fn add_command_error(name: &str, path: &str, arguments: &[&str], message: String) {
     COMMAND_ERRORS.with(|e| {
-        e.borrow_mut()
-            .entry(name.into())
-            .or_default()
-            .push(format!(
-                "couldn't execute `{} {}` (path={}) ({})",
-                name,
-                arguments.join(" "),
-                path,
-                message,
-            ))
+        e.borrow_mut().entry(name.into()).or_default().push(format!(
+            "couldn't execute `{} {}` (path={}) ({})",
+            name,
+            arguments.join(" "),
+            path,
+            message,
+        ))
     });
 }
 
@@ -90,10 +87,12 @@ impl Drop for CommandErrorPrinter {
 }
 
 #[cfg(test)]
+type RunCommandFn = Box<dyn Fn(&str, &str, &[&str]) -> Option<String> + Send + Sync + 'static>;
+
+#[cfg(test)]
 lazy_static::lazy_static! {
-    pub static ref RUN_COMMAND_MOCK: std::sync::Mutex<
-        Option<Box<dyn Fn(&str, &str, &[&str]) -> Option<String> + Send + Sync + 'static>>,
-    > = std::sync::Mutex::new(None);
+    pub static ref RUN_COMMAND_MOCK: std::sync::Mutex<Option<RunCommandFn>> =
+        std::sync::Mutex::new(None);
 }
 
 /// Executes a command and returns the `stdout` output if the command was
@@ -122,10 +121,310 @@ fn run_command(name: &str, path: &str, arguments: &[&str]) -> Option<String> {
     }
 }
 
+/// Resolves the path to the `llvm-config` executable.
+///
+/// Uses the following strategy in order:
+/// 1. `LLVM_CONFIG_PATH` environment variable (if set)
+/// 2. Auto-detection in well-known platform-specific directories (cached)
+/// 3. Falls back to `"llvm-config"` (relying on PATH lookup)
+fn resolve_llvm_config_path() -> String {
+    if let Ok(path) = env::var("LLVM_CONFIG_PATH") {
+        return path;
+    }
+
+    if let Some(path) = find_llvm_config() {
+        return path;
+    }
+
+    "llvm-config".into()
+}
+
+thread_local! {
+    /// Cached result from `llvm-config` auto-detection.
+    /// - `None`: not yet searched
+    /// - `Some(None)`: searched but not found
+    /// - `Some(Some(path))`: found at the given path
+    static LLVM_CONFIG_PATH_CACHE: RefCell<Option<Option<String>>> = const { RefCell::new(None) };
+}
+
+/// Returns the target Clang major version derived from the highest enabled
+/// `clang_X_0` feature flag. Returns `None` if no version feature is enabled.
+fn get_target_clang_version() -> Option<u32> {
+    // Features are cumulative (clang_21_0 implies clang_20_0, etc.), so the
+    // highest enabled feature determines the target version.
+    if cfg!(feature = "clang_23_0") {
+        Some(23)
+    } else if cfg!(feature = "clang_22_0") {
+        Some(22)
+    } else if cfg!(feature = "clang_21_0") {
+        Some(21)
+    } else if cfg!(feature = "clang_20_0") {
+        Some(20)
+    } else if cfg!(feature = "clang_19_0") {
+        Some(19)
+    } else if cfg!(feature = "clang_18_0") {
+        Some(18)
+    } else if cfg!(feature = "clang_17_0") {
+        Some(17)
+    } else if cfg!(feature = "clang_16_0") {
+        Some(16)
+    } else if cfg!(feature = "clang_15_0") {
+        Some(15)
+    } else if cfg!(feature = "clang_14_0") {
+        Some(14)
+    } else if cfg!(feature = "clang_13_0") {
+        Some(13)
+    } else if cfg!(feature = "clang_12_0") {
+        Some(12)
+    } else if cfg!(feature = "clang_11_0") {
+        Some(11)
+    } else if cfg!(feature = "clang_10_0") {
+        Some(10)
+    } else if cfg!(feature = "clang_9_0") {
+        Some(9)
+    } else if cfg!(feature = "clang_8_0") {
+        Some(8)
+    } else if cfg!(feature = "clang_7_0") {
+        Some(7)
+    } else if cfg!(feature = "clang_6_0") {
+        Some(6)
+    } else if cfg!(feature = "clang_5_0") {
+        Some(5)
+    } else if cfg!(feature = "clang_4_0") {
+        Some(4)
+    } else if cfg!(any(
+        feature = "clang_3_9",
+        feature = "clang_3_8",
+        feature = "clang_3_7",
+        feature = "clang_3_6",
+        feature = "clang_3_5",
+    )) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
+/// Searches well-known platform-specific directories for an `llvm-config`
+/// executable. Results are cached across calls.
+///
+/// Prefers the installation matching the target Clang version (derived from
+/// the highest enabled `clang_X_0` feature flag). Falls back to the highest
+/// available version if no exact match is found.
+fn find_llvm_config() -> Option<String> {
+    LLVM_CONFIG_PATH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(ref cached) = *cache {
+            return cached.clone();
+        }
+
+        let result = find_llvm_config_uncached();
+        *cache = Some(result.clone());
+        result
+    })
+}
+
+/// Performs the actual filesystem search for `llvm-config`.
+fn find_llvm_config_uncached() -> Option<String> {
+    // Don't auto-detect during tests, which use mocked commands.
+    if test!() {
+        return None;
+    }
+
+    let target_version = get_target_clang_version();
+
+    // If llvm-config is already findable on PATH, check if its version
+    // matches our target before accepting it.
+    if let Ok(output) = Command::new("llvm-config").arg("--version").output()
+        && output.status.success()
+    {
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        let path_major = version_str
+            .trim()
+            .split('.')
+            .next()
+            .and_then(|s| s.parse::<u32>().ok());
+
+        match (target_version, path_major) {
+            // No feature flag set, or version matches -> use PATH.
+            (None, _) | (_, None) => return Some("llvm-config".into()),
+            (Some(target), Some(found)) if target == found => {
+                return Some("llvm-config".into());
+            }
+            // Version mismatch -> fall through to search for the right one.
+            _ => {}
+        }
+    }
+
+    let patterns: Vec<&str> = if target_os!("macos") {
+        vec![
+            // Homebrew on Apple Silicon (arm64)
+            "/opt/homebrew/opt/llvm/bin/llvm-config",
+            "/opt/homebrew/opt/llvm@*/bin/llvm-config",
+            // Homebrew on Intel (x86_64)
+            "/usr/local/opt/llvm/bin/llvm-config",
+            "/usr/local/opt/llvm@*/bin/llvm-config",
+            // MacPorts
+            "/opt/local/libexec/llvm-*/bin/llvm-config",
+        ]
+    } else if target_os!("linux") || target_os!("freebsd") {
+        vec![
+            // Versioned executables (Debian/Ubuntu packages)
+            "/usr/bin/llvm-config-*",
+            // Standard LLVM installations
+            "/usr/lib/llvm-*/bin/llvm-config",
+            // Manual /usr/local installations
+            "/usr/local/llvm*/bin/llvm-config",
+        ]
+    } else if target_os!("windows") {
+        vec![
+            "C:\\Program Files\\LLVM\\bin\\llvm-config.exe",
+            "C:\\Program Files*\\LLVM\\bin\\llvm-config.exe",
+        ]
+    } else if target_os!("illumos") {
+        vec!["/opt/ooce/llvm-*/bin/llvm-config"]
+    } else {
+        vec![]
+    };
+
+    let mut candidates: Vec<(PathBuf, Vec<u32>)> = Vec::new();
+
+    for pattern in patterns {
+        if let Ok(paths) = glob::glob(pattern) {
+            for path in paths.filter_map(Result::ok) {
+                if path.exists() {
+                    let mut version = extract_version_from_llvm_path(&path);
+
+                    // For unversioned paths (e.g., Homebrew's `llvm` formula),
+                    // resolve the actual version by running the executable.
+                    if version == [999]
+                        && let Some(real) = query_llvm_config_version(&path)
+                    {
+                        version = vec![real];
+                    }
+
+                    candidates.push((path, version));
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // If a target version is specified via feature flags, require a
+    // candidate whose major version matches. Hard-fails if the
+    // requested version is not installed.
+    if let Some(target) = target_version {
+        if let Some((path, _)) = candidates
+            .iter()
+            .find(|(_, v)| v.first().copied() == Some(target))
+        {
+            let path_str = path.to_string_lossy().into_owned();
+            println!(
+                "cargo:warning=clang-sys: auto-detected llvm-config (v{}) at: {}",
+                target, path_str
+            );
+            return Some(path_str);
+        }
+
+        // No matching version found. Don't fall back to a different version.
+        let available: Vec<String> = candidates
+            .iter()
+            .filter_map(|(_, v)| v.first().map(|n| n.to_string()))
+            .collect();
+        println!(
+            "cargo:warning=clang-sys: could not find llvm-config for v{} \
+             (available: {}). Install LLVM {} or set LLVM_CONFIG_PATH.",
+            target,
+            if available.is_empty() {
+                "none".into()
+            } else {
+                available.join(", ")
+            },
+            target,
+        );
+        None
+    } else {
+        // No version feature set. Use the highest available.
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+        let (path, _) = &candidates[0];
+        let path_str = path.to_string_lossy().into_owned();
+        println!(
+            "cargo:warning=clang-sys: auto-detected llvm-config at: {}",
+            path_str
+        );
+        Some(path_str)
+    }
+}
+
+/// Queries an `llvm-config` executable for its major version number.
+fn query_llvm_config_version(path: &Path) -> Option<u32> {
+    Command::new(path)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .split('.')
+                .next()
+                .and_then(|s| s.parse().ok())
+        })
+}
+
+/// Extracts a version number from an `llvm-config` path for sorting purposes.
+///
+/// Recognizes patterns in path components and filenames:
+/// - `llvm@17` → `[17]`
+/// - `llvm-17` → `[17]`
+/// - `llvm-config-17` → `[17]`
+/// - Unversioned `llvm` → `[999]` (highest priority, typically the latest)
+fn extract_version_from_llvm_path(path: &Path) -> Vec<u32> {
+    // Check the filename for versioned llvm-config (e.g., llvm-config-17).
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && let Some(rest) = name.strip_prefix("llvm-config-")
+    {
+        let version: Vec<u32> = rest.split('.').filter_map(|p| p.parse().ok()).collect();
+        if !version.is_empty() {
+            return version;
+        }
+        // Has a suffix but it's not a version number; deprioritize.
+        return vec![0];
+    }
+
+    // Check path components for versioned directory names.
+    for component in path.components() {
+        let s = component.as_os_str().to_string_lossy();
+
+        // Homebrew-style: llvm@17
+        if let Some(rest) = s.strip_prefix("llvm@") {
+            let version: Vec<u32> = rest.split('.').filter_map(|p| p.parse().ok()).collect();
+            if !version.is_empty() {
+                return version;
+            }
+        }
+
+        // Package/directory-style: llvm-17
+        if let Some(rest) = s.strip_prefix("llvm-") {
+            let version: Vec<u32> = rest.split('.').filter_map(|p| p.parse().ok()).collect();
+            if !version.is_empty() {
+                return version;
+            }
+        }
+    }
+
+    // Unversioned "llvm" directory (e.g., Homebrew's latest formula) gets
+    // highest priority since it typically represents the most recent version.
+    vec![999]
+}
+
 /// Executes the `llvm-config` command and returns the `stdout` output if the
 /// command was successfully executed (errors are added to `COMMAND_ERRORS`).
 pub fn run_llvm_config(arguments: &[&str]) -> Option<String> {
-    let path = env::var("LLVM_CONFIG_PATH").unwrap_or_else(|_| "llvm-config".into());
+    let path = resolve_llvm_config_path();
     run_command("llvm-config", &path, arguments)
 }
 
@@ -169,10 +468,17 @@ const DIRECTORIES_LINUX: &[&str] = &[
 
 /// `libclang` directory patterns for macOS.
 const DIRECTORIES_MACOS: &[&str] = &[
+    // Homebrew on Apple Silicon (arm64)
+    "/opt/homebrew/opt/llvm*/lib",
+    "/opt/homebrew/opt/llvm*/lib/llvm*/lib",
+    // Homebrew on Intel (x86_64)
+    "/usr/local/opt/llvm*/lib",
     "/usr/local/opt/llvm*/lib/llvm*/lib",
+    // Apple Command Line Tools and Xcode
     "/Library/Developer/CommandLineTools/usr/lib",
     "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib",
-    "/usr/local/opt/llvm*/lib",
+    // MacPorts
+    "/opt/local/libexec/llvm-*/lib",
 ];
 
 /// `libclang` directory patterns for Windows.
@@ -190,14 +496,14 @@ const DIRECTORIES_WINDOWS: &[(&str, bool)] = &[
     ("C:\\LLVM\\lib", true),
     // LLVM + Clang can be installed as a component of Visual Studio.
     // https://github.com/KyleMayes/clang-sys/issues/121
-    ("C:\\Program Files*\\Microsoft Visual Studio\\*\\VC\\Tools\\Llvm\\**\\lib", true),
+    (
+        "C:\\Program Files*\\Microsoft Visual Studio\\*\\VC\\Tools\\Llvm\\**\\lib",
+        true,
+    ),
 ];
 
 /// `libclang` directory patterns for illumos
-const DIRECTORIES_ILLUMOS: &[&str] = &[
-    "/opt/ooce/llvm-*/lib",
-    "/opt/ooce/clang-*/lib",
-];
+const DIRECTORIES_ILLUMOS: &[&str] = &["/opt/ooce/llvm-*/lib", "/opt/ooce/clang-*/lib"];
 
 //================================================
 // Searching
@@ -294,12 +600,12 @@ pub fn search_libclang_directories(filenames: &[String], variable: &str) -> Vec<
 
     // Search the toolchain directory in the directory returned by
     // `xcode-select --print-path`.
-    if target_os!("macos") {
-        if let Some(output) = run_xcode_select(&["--print-path"]) {
-            let directory = Path::new(output.lines().next().unwrap()).to_path_buf();
-            let directory = directory.join("Toolchains/XcodeDefault.xctoolchain/usr/lib");
-            found.extend(search_directories(&directory, filenames));
-        }
+    if target_os!("macos")
+        && let Some(output) = run_xcode_select(&["--print-path"])
+    {
+        let directory = Path::new(output.lines().next().unwrap()).to_path_buf();
+        let directory = directory.join("Toolchains/XcodeDefault.xctoolchain/usr/lib");
+        found.extend(search_directories(&directory, filenames));
     }
 
     // Search the directories in the `LD_LIBRARY_PATH` environment variable.
@@ -334,7 +640,11 @@ pub fn search_libclang_directories(filenames: &[String], variable: &str) -> Vec<
     let directories = if test!() {
         directories
             .iter()
-            .map(|d| d.strip_prefix('/').or_else(|| d.strip_prefix("C:\\")).unwrap_or(d))
+            .map(|d| {
+                d.strip_prefix('/')
+                    .or_else(|| d.strip_prefix("C:\\"))
+                    .unwrap_or(d)
+            })
             .collect::<Vec<_>>()
     } else {
         directories

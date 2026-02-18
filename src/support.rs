@@ -86,27 +86,26 @@ impl Clang {
         }
 
         #[cfg(feature = "runtime")]
-        if let Some(library) = crate::get_library() {
-            if let Some(directory) = library.path().parent() {
-                paths.push(directory.into());
-                if let Some(parent) = directory.parent() {
-                    paths.push(parent.join("bin"));
-                }
+        if let Some(library) = crate::get_library()
+            && let Some(directory) = library.path().parent()
+        {
+            paths.push(directory.into());
+            if let Some(parent) = directory.parent() {
+                paths.push(parent.join("bin"));
             }
         }
 
-        if let Ok(path) = run_llvm_config(&["--bindir"]) {
-            if let Some(line) = path.lines().next() {
-                paths.push(line.into());
-            }
+        if let Ok(path) = run_llvm_config(&["--bindir"])
+            && let Some(line) = path.lines().next()
+        {
+            paths.push(line.into());
         }
 
-        if cfg!(target_os = "macos") {
-            if let Ok((path, _)) = run("xcodebuild", &["-find", "clang"]) {
-                if let Some(line) = path.lines().next() {
-                    paths.push(line.into());
-                }
-            }
+        if cfg!(target_os = "macos")
+            && let Ok((path, _)) = run("xcodebuild", &["-find", "clang"])
+            && let Some(line) = path.lines().next()
+        {
+            paths.push(line.into());
         }
 
         if let Ok(path) = env::var("PATH") {
@@ -158,10 +157,11 @@ fn find(directory: &Path, patterns: &[&str]) -> Option<PathBuf> {
 
     for pattern in patterns {
         let pattern = directory.join(pattern).to_string_lossy().into_owned();
-        if let Some(path) = glob::glob(&pattern).ok()?.filter_map(|p| p.ok()).next() {
-            if path.is_file() && is_executable(&path).unwrap_or(false) {
-                return Some(path);
-            }
+        if let Some(path) = glob::glob(&pattern).ok()?.filter_map(|p| p.ok()).next()
+            && path.is_file()
+            && is_executable(&path).unwrap_or(false)
+        {
+            return Some(path);
         }
     }
 

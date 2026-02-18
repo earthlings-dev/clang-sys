@@ -63,6 +63,12 @@ macro_rules! link {
             V12_0 = 120,
             V16_0 = 160,
             V17_0 = 170,
+            V18_0 = 180,
+            V19_0 = 190,
+            V20_0 = 200,
+            V21_0 = 210,
+            V22_0 = 220,
+            V23_0 = 230,
         }
 
         impl fmt::Display for Version {
@@ -83,7 +89,13 @@ macro_rules! link {
                     V11_0 => write!(f, "11.0.x"),
                     V12_0 => write!(f, "12.0.x - 15.0.x"),
                     V16_0 => write!(f, "16.0.x"),
-                    V17_0 => write!(f, "17.0.x or later"),
+                    V17_0 => write!(f, "17.0.x"),
+                    V18_0 => write!(f, "18.0.x"),
+                    V19_0 => write!(f, "19.0.x"),
+                    V20_0 => write!(f, "20.0.x"),
+                    V21_0 => write!(f, "21.0.x"),
+                    V22_0 => write!(f, "22.0.x"),
+                    V23_0 => write!(f, "23.0.x or later"),
                 }
             }
         }
@@ -93,7 +105,7 @@ macro_rules! link {
         pub struct Functions {
             $(
                 $(#[doc=$doc] #[cfg($cfg)])*
-                pub $name: Option<unsafe extern fn($($pname: $pty), *) $(-> $ret)*>,
+                pub $name: Option<unsafe extern "C" fn($($pname: $pty), *) $(-> $ret)*>,
             )+
         }
 
@@ -117,39 +129,250 @@ macro_rules! link {
 
             /// Returns the (minimum) version of this `libclang` shared library.
             ///
-            /// If this returns `None`, it indicates that the version is too old
-            /// to be supported by this crate (i.e., `3.4` or earlier). If the
-            /// version of this shared library is more recent than that fully
-            /// supported by this crate, the most recent fully supported version
-            /// will be returned.
+            /// This method uses a hybrid detection strategy:
+            ///
+            /// 1. **Marker function detection**: Checks for unique functions introduced
+            ///    in specific versions (fast, works for v19, v20, v21)
+            /// 2. **Version string parsing**: Falls back to parsing `clang_getClangVersion()`
+            ///    for accurate detection of all versions (v17-v23+)
+            ///
+            /// # Returns
+            ///
+            /// - `Some(Version::VXX_0)` - The detected Clang version
+            /// - `None` - Version too old to be supported (v3.4 or earlier)
+            ///
+            /// # Version Support
+            ///
+            /// - **Clang 23.x**: Fully detected via version string parsing
+            /// - **Clang 22.x**: Fully detected via version string parsing
+            /// - **Clang 21.x**: Detected via `clang_getFullyQualifiedName` marker + string
+            /// - **Clang 20.x**: Detected via `clang_getOffsetOfBase` marker
+            /// - **Clang 19.x**: Detected via `clang_Cursor_getBinaryOpcode` marker
+            /// - **Clang 18.x**: Fully detected via version string parsing
+            /// - **Clang 17.x**: Detected via `clang_CXXMethod_isExplicit` marker + string
+            /// - **Clang 16.x and older**: Detected via their respective markers
+            ///
+            /// # Examples
+            ///
+            /// ```no_run
+            /// # #[cfg(feature = "runtime")]
+            /// # fn example() {
+            /// # use clang_sys::{load, get_library, Version};
+            /// load().expect("Failed to load libclang");
+            /// let library = get_library().expect("Library not loaded");
+            /// match library.version() {
+            ///     Some(Version::V23_0) => println!("Clang 23.x detected"),
+            ///     Some(Version::V22_0) => println!("Clang 22.x detected"),
+            ///     Some(v) => println!("Clang version: {}", v),
+            ///     None => println!("Unsupported old version"),
+            /// }
+            /// # }
+            /// ```
             pub fn version(&self) -> Option<Version> {
+                /// Helper macro to check if a marker function exists in the library.
+                ///
+                /// If the function exists, immediately returns the specified version.
+                /// This provides fast detection for versions with unique marker functions.
                 macro_rules! check {
                     ($fn:expr, $version:ident) => {
-                        if self.library.get::<unsafe extern fn()>($fn).is_ok() {
+                        // SAFETY: Symbol lookup is safe. Library is valid and loaded.
+                        if self.library.get::<unsafe extern "C" fn()>($fn).is_ok() {
                             return Some(Version::$version);
                         }
                     };
                 }
 
+                // SAFETY: All symbol lookups and function calls are on the valid,
+                // loaded libclang library stored in self.library.
                 unsafe {
-                    check!(b"clang_CXXMethod_isExplicit", V17_0);
+                    // Version detection strategy: ordered newest to oldest.
+                    // Uses marker functions for fast detection, with version string
+                    // parsing as fallback for accurate detection of all versions.
+
+                    // Clang 21.0+: Added `clang_getFullyQualifiedName` and GCC assembly API.
+                    // For v21+, we parse the version string to distinguish v21/v22/v23.
+                    // SAFETY: Symbol lookup is safe.
+                    if self.library.get::<unsafe extern "C" fn()>(b"clang_getFullyQualifiedName").is_ok() {
+                        // SAFETY: Library is valid and loaded. version_from_string
+                        // performs its own safety checks on all FFI calls.
+                        return self.version_from_string().or(Some(Version::V21_0));
+                    }
+
+                    // Clang 20.0: Added base class introspection via `clang_getOffsetOfBase`.
+                    check!(b"clang_getOffsetOfBase", V20_0);
+
+                    // Clang 19.0: Added binary operator introspection.
+                    check!(b"clang_Cursor_getBinaryOpcode", V19_0);
+
+                    // Clang 17.0+: Added C++ method classification via `clang_CXXMethod_isExplicit`.
+                    // For v17/v18, we parse the version string to distinguish them accurately.
+                    // Clang 18 added no unique public C API functions (only enum values).
+                    // SAFETY: Symbol lookup is safe.
+                    if self.library.get::<unsafe extern "C" fn()>(b"clang_CXXMethod_isExplicit").is_ok() {
+                        // SAFETY: Library is valid and loaded. version_from_string
+                        // performs its own safety checks on all FFI calls.
+                        return self.version_from_string().or(Some(Version::V17_0));
+                    }
+
+                    // Clang 16.0: Added copy assignment operator checking.
                     check!(b"clang_CXXMethod_isCopyAssignmentOperator", V16_0);
+
+                    // Clang 12.0: Added variable declaration initializer access.
                     check!(b"clang_Cursor_getVarDeclInitializer", V12_0);
+
+                    // Clang 11.0: Added value type access.
                     check!(b"clang_Type_getValueType", V11_0);
+
+                    // Clang 9.0: Added anonymous record declaration checking.
                     check!(b"clang_Cursor_isAnonymousRecordDecl", V9_0);
+
+                    // Clang 8.0: Added Objective-C property getter name access.
                     check!(b"clang_Cursor_getObjCPropertyGetterName", V8_0);
+
+                    // Clang 7.0: Added real path name access for files.
                     check!(b"clang_File_tryGetRealPathName", V7_0);
+
+                    // Clang 6.0: Added invocation emission path option.
                     check!(b"clang_CXIndex_setInvocationEmissionPathOption", V6_0);
+
+                    // Clang 5.0: Added external symbol checking.
                     check!(b"clang_Cursor_isExternalSymbol", V5_0);
+
+                    // Clang 4.0: Added evaluation result as long long.
                     check!(b"clang_EvalResult_getAsLongLong", V4_0);
+
+                    // Clang 3.9: Added C++ constructor conversion checking.
                     check!(b"clang_CXXConstructor_isConvertingConstructor", V3_9);
+
+                    // Clang 3.8: Added C++ field mutability checking.
                     check!(b"clang_CXXField_isMutable", V3_8);
+
+                    // Clang 3.7: Added field offset access.
                     check!(b"clang_Cursor_getOffsetOfField", V3_7);
+
+                    // Clang 3.6: Added storage class access.
                     check!(b"clang_Cursor_getStorageClass", V3_6);
+
+                    // Clang 3.5: Added template argument counting.
                     check!(b"clang_Type_getNumTemplateArguments", V3_5);
                 }
 
+                // No marker function matched and version string parsing failed or not available.
+                // This indicates a version older than 3.5 or an unsupported configuration.
                 None
+            }
+
+            /// Parse version from `clang_getClangVersion()` string.
+            ///
+            /// This method provides accurate version detection for all Clang versions,
+            /// including those that don't introduce unique marker functions in the
+            /// C API (such as v18, v22, and v23).
+            ///
+            /// The version string format is typically: `"clang version MAJOR.MINOR.PATCH"`
+            /// (e.g., `"clang version 23.1.0"`).
+            ///
+            /// # Returns
+            ///
+            /// - `Some(Version::VXX_0)` if the version can be successfully parsed
+            /// - `None` if version parsing fails or the version is unsupported
+            ///
+            /// # Safety
+            ///
+            /// This function calls unsafe libclang C FFI functions and must only be
+            /// called with a valid, loaded libclang library. The caller must ensure:
+            ///
+            /// - `self.library` contains a valid libloading::Library instance
+            /// - The library exports the required functions: `clang_getClangVersion`,
+            ///   `clang_getCString`, and `clang_disposeString`
+            /// - The library remains loaded for the duration of this call
+            unsafe fn version_from_string(&self) -> Option<Version> {
+                use std::ffi::CStr;
+                use std::os::raw::c_char;
+
+                // Local copy of CXString to avoid module path issues in the macro.
+                // This must match the ABI layout of the actual CXString in libclang.
+                #[repr(C)]
+                #[derive(Copy, Clone)]
+                struct CXString {
+                    /// Opaque data pointer managed by libclang
+                    data: *const std::os::raw::c_void,
+                    /// Internal flags used by libclang for memory management
+                    private_flags: std::os::raw::c_uint,
+                }
+
+                // SAFETY: All operations are FFI calls to functions exported by the
+                // loaded libclang library. We verify each function exists before calling.
+                // CXString memory is properly disposed via clang_disposeString.
+                unsafe {
+                    // Get the version function from the loaded library.
+                    // SAFETY: Library is valid and loaded. Symbol lookup is safe.
+                    let get_version = self.library
+                        .get::<unsafe extern "C" fn() -> CXString>(b"clang_getClangVersion")
+                        .ok()?;
+
+                    // SAFETY: Function pointer is valid, takes no arguments.
+                    let version_cxstring = get_version();
+
+                    // Get the C string accessor function.
+                    // SAFETY: Library is valid and loaded. Symbol lookup is safe.
+                    let get_cstring = self.library
+                        .get::<unsafe extern "C" fn(CXString) -> *const c_char>(b"clang_getCString")
+                        .ok()?;
+
+                    // SAFETY: version_cxstring is a valid CXString returned from libclang.
+                    let c_str_ptr = get_cstring(version_cxstring);
+                    if c_str_ptr.is_null() {
+                        return None;
+                    }
+
+                    // SAFETY: c_str_ptr is non-null and points to a valid C string
+                    // managed by libclang. The string remains valid until we dispose
+                    // the CXString.
+                    let version_str = CStr::from_ptr(c_str_ptr).to_str().ok()?;
+
+                    // Parse "clang version 23.1.0" or similar.
+                    // Expected format: "clang version MAJOR.MINOR.PATCH"
+                    // We extract only the MAJOR version for our coarse-grained detection.
+                    let major = version_str
+                        .split_whitespace()
+                        .nth(2)?  // Extract "23.1.0" from "clang version 23.1.0"
+                        .split('.')
+                        .next()?  // Extract "23" from "23.1.0"
+                        .parse::<u32>()
+                        .ok()?;
+
+                    // Dispose the CXString to free libclang-managed memory.
+                    // SAFETY: Library is valid. Symbol lookup is safe.
+                    let dispose = self.library
+                        .get::<unsafe extern "C" fn(CXString)>(b"clang_disposeString")
+                        .ok()?;
+
+                    // SAFETY: version_cxstring is a valid CXString that hasn't been
+                    // disposed yet. This is the standard cleanup for CXString values.
+                    dispose(version_cxstring);
+
+                    // Map LLVM/Clang major version to our Version enum.
+                    // Versions are grouped to match the granularity of our enum variants.
+                    match major {
+                        23.. => Some(Version::V23_0),      // Clang 23.x and newer
+                        22 => Some(Version::V22_0),         // Clang 22.x
+                        21 => Some(Version::V21_0),         // Clang 21.x
+                        20 => Some(Version::V20_0),         // Clang 20.x
+                        19 => Some(Version::V19_0),         // Clang 19.x
+                        18 => Some(Version::V18_0),         // Clang 18.x
+                        17 => Some(Version::V17_0),         // Clang 17.x
+                        16 => Some(Version::V16_0),         // Clang 16.x
+                        12..=15 => Some(Version::V12_0),    // Clang 12.x - 15.x
+                        11 => Some(Version::V11_0),         // Clang 11.x
+                        9 | 10 => Some(Version::V9_0),      // Clang 9.x - 10.x
+                        8 => Some(Version::V8_0),           // Clang 8.x
+                        7 => Some(Version::V7_0),           // Clang 7.x
+                        6 => Some(Version::V6_0),           // Clang 6.x
+                        5 => Some(Version::V5_0),           // Clang 5.x
+                        4 => Some(Version::V4_0),           // Clang 4.x
+                        _ => None,                          // Unsupported (3.x or unknown)
+                    }
+                }
             }
         }
 
@@ -170,8 +393,8 @@ macro_rules! link {
         }
 
         $(
-            #[cfg_attr(feature="cargo-clippy", allow(clippy::missing_safety_doc))]
-            #[cfg_attr(feature="cargo-clippy", allow(clippy::too_many_arguments))]
+            #[cfg_attr(clippy, allow(clippy::missing_safety_doc))]
+            #[cfg_attr(clippy, allow(clippy::too_many_arguments))]
             $(#[doc=$doc] #[cfg($cfg)])*
             pub unsafe fn $name($($pname: $pty), *) $(-> $ret)* {
                 let f = with_library(|library| {
@@ -190,7 +413,7 @@ https://docs.rs/clang-sys/latest/clang_sys/{0}/index.html
 
 Instructions for installing `libclang` can be found here:
 https://rust-lang.github.io/rust-bindgen/requirements.html
-"#, 
+"#,
                             stringify!($name),
                             library
                                 .version()
@@ -199,7 +422,7 @@ https://rust-lang.github.io/rust-bindgen/requirements.html
                         );
                     }
                 }).expect("a `libclang` shared library is not loaded on this thread");
-                f($($pname), *)
+                unsafe { f($($pname), *) }
             }
 
             $(#[doc=$doc] #[cfg($cfg)])*
@@ -305,7 +528,7 @@ macro_rules! link {
             pub fn $name:ident($($pname:ident: $pty:ty), *) $(-> $ret:ty)*;
         )+
     ) => (
-        extern {
+        unsafe extern "C" {
             $(
                 $(#[doc=$doc] #[cfg($cfg)])*
                 pub fn $name($($pname: $pty), *) $(-> $ret)*;

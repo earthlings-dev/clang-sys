@@ -27,7 +27,6 @@ struct RunCommandMock {
     responses: HashMap<Vec<String>, String>,
 }
 
-
 #[derive(Copy, Clone, Debug)]
 enum Arch {
     ARM64,
@@ -77,7 +76,10 @@ impl Env {
             env: None,
             vars: HashMap::new(),
             cwd: env::current_dir().unwrap(),
-            tmp: tempfile::Builder::new().prefix("clang_sys_test").tempdir().unwrap(),
+            tmp: tempfile::Builder::new()
+                .prefix("clang_sys_test")
+                .tempdir()
+                .unwrap(),
             files: vec![],
             commands: Default::default(),
         }
@@ -96,7 +98,8 @@ impl Env {
 
     fn var(mut self, name: &str, value: Option<&str>) -> Self {
         let previous = env::var(name).ok();
-        self.vars.insert(name.into(), (value.map(|v| v.into()), previous));
+        self.vars
+            .insert(name.into(), (value.map(|v| v.into()), previous));
         self
     }
 
@@ -141,25 +144,49 @@ impl Env {
 
         let mut key = vec![command];
         key.extend(args);
-        self.commands.lock().unwrap().responses.insert(key, response.into());
+        self.commands
+            .lock()
+            .unwrap()
+            .responses
+            .insert(key, response.into());
 
         self
     }
 
+    /// Activates this test environment by setting environment variables.
+    ///
+    /// This configures the build script's environment to use the mocked
+    /// filesystem and command execution defined in this test environment.
     fn enable(self) -> Self {
-        env::set_var("_CLANG_SYS_TEST", "yep");
-        env::set_var("_CLANG_SYS_TEST_OS", &self.os);
-        env::set_var("_CLANG_SYS_TEST_ARCH", &format!("{}", self.arch));
-        env::set_var("_CLANG_SYS_TEST_POINTER_WIDTH", &self.pointer_width);
-        if let Some(env) = &self.env {
-            env::set_var("_CLANG_SYS_TEST_ENV", env);
-        }
+        // SAFETY: We're in a test context where modifying environment variables
+        // is acceptable. Tests run serially (enforced by test_all()) to prevent
+        // concurrent environment modification. The Drop impl restores all
+        // environment variables to their original state.
+        //
+        // Note: env::set_var and env::remove_var are unsafe because concurrent
+        // modification of environment variables can cause data races. We mitigate
+        // this by running tests serially.
+        unsafe {
+            // Set test mode flag
+            env::set_var("_CLANG_SYS_TEST", "yep");
 
-        for (name, (value, _)) in &self.vars {
-            if let Some(value) = value {
-                env::set_var(name, value);
-            } else {
-                env::remove_var(name);
+            // Configure target platform for the build script
+            env::set_var("_CLANG_SYS_TEST_OS", &self.os);
+            env::set_var("_CLANG_SYS_TEST_ARCH", format!("{}", self.arch));
+            env::set_var("_CLANG_SYS_TEST_POINTER_WIDTH", &self.pointer_width);
+
+            // Configure target environment (gnu/msvc)
+            if let Some(env) = &self.env {
+                env::set_var("_CLANG_SYS_TEST_ENV", env);
+            }
+
+            // Set or clear environment variables as configured
+            for (name, (value, _)) in &self.vars {
+                if let Some(value) = value {
+                    env::set_var(name, value);
+                } else {
+                    env::remove_var(name);
+                }
             }
         }
 
@@ -173,7 +200,9 @@ impl Env {
             let args = args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
 
             let mut commands = commands.lock().unwrap();
-            commands.invocations.push((command.clone(), path, args.clone()));
+            commands
+                .invocations
+                .push((command.clone(), path, args.clone()));
 
             let mut key = vec![command];
             key.extend(args);
@@ -185,18 +214,32 @@ impl Env {
 }
 
 impl Drop for Env {
+    /// Restores the environment to its original state after testing.
+    ///
+    /// This cleanup ensures that environment modifications made during the test
+    /// don't leak to subsequent tests or the test harness itself.
     fn drop(&mut self) {
-        env::remove_var("_CLANG_SYS_TEST");
-        env::remove_var("_CLANG_SYS_TEST_OS");
-        env::remove_var("_CLANG_SYS_TEST_ARCH");
-        env::remove_var("_CLANG_SYS_TEST_POINTER_WIDTH");
-        env::remove_var("_CLANG_SYS_TEST_ENV");
+        // SAFETY: We're restoring environment variables that we previously modified
+        // in enable(). Since tests run serially and we're the only ones modifying
+        // these variables, there's no risk of data races. We restore to the exact
+        // state captured in enable().
+        unsafe {
+            // Remove test mode flags
+            env::remove_var("_CLANG_SYS_TEST");
+            env::remove_var("_CLANG_SYS_TEST_OS");
+            env::remove_var("_CLANG_SYS_TEST_ARCH");
+            env::remove_var("_CLANG_SYS_TEST_POINTER_WIDTH");
+            env::remove_var("_CLANG_SYS_TEST_ENV");
 
-        for (name, (_, previous)) in &self.vars {
-            if let Some(previous) = previous {
-                env::set_var(name, previous);
-            } else {
-                env::remove_var(name);
+            // Restore all environment variables to their original state
+            for (name, (_, previous)) in &self.vars {
+                if let Some(previous) = previous {
+                    // Variable existed before test, restore original value
+                    env::set_var(name, previous);
+                } else {
+                    // Variable didn't exist before test, remove it
+                    env::remove_var(name);
+                }
             }
         }
 
@@ -209,7 +252,7 @@ impl Drop for Env {
 #[test]
 fn test_all() {
     // Run tests serially since they alter the environment.
-    
+
     test_linux_directory_preference();
     test_linux_version_preference();
     test_linux_directory_and_version_preference();
@@ -224,11 +267,15 @@ fn test_all() {
     }
 }
 
+#[cfg(target_os = "windows")]
 macro_rules! assert_error {
     ($result:expr, $contents:expr $(,)?) => {
         if let Err(error) = $result {
             if !error.contains($contents) {
-                panic!("expected error to contain {:?}, received: {error:?}", $contents);
+                panic!(
+                    "expected error to contain {:?}, received: {error:?}",
+                    $contents
+                );
             }
         } else {
             panic!("expected error, received: {:?}", $result);
@@ -336,7 +383,7 @@ fn test_windows_arm64_on_x86_64() {
         .enable();
 
     assert_error!(
-        dynamic::find(true), 
+        dynamic::find(true),
         "invalid: [(Program Files\\LLVM\\bin\\libclang.dll: invalid DLL (ARM64)",
     );
 }
@@ -350,7 +397,7 @@ fn test_windows_x86_64_on_arm64() {
         .enable();
 
     assert_error!(
-        dynamic::find(true), 
+        dynamic::find(true),
         "invalid: [(Program Files\\LLVM\\bin\\libclang.dll: invalid DLL (x86-64)",
     );
 }

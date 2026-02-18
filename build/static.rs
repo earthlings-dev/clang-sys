@@ -76,21 +76,43 @@ fn get_clang_libraries<P: AsRef<Path>>(directory: P) -> Vec<String> {
 
 /// Finds a directory containing LLVM and Clang static libraries and returns the
 /// path to that directory.
+///
+/// This function searches for static libraries using multiple strategies:
+/// 1. Look for `libclang.a` (monolithic static library - older LLVM builds)
+/// 2. Look for `libclangBasic.a` (component static library - modern LLVM builds)
+/// 3. Use `LIBCLANG_STATIC_PATH` environment variable if set
+///
+/// Modern LLVM installations (especially from package managers like Homebrew)
+/// split libclang into component libraries rather than providing a monolithic
+/// `libclang.a`. This function handles both styles transparently.
 fn find() -> PathBuf {
-    let name = if target_os!("windows") {
-        "libclang.lib"
+    // Try to find either the monolithic library or a component library that
+    // always exists in Clang static builds.
+    let candidates = if target_os!("windows") {
+        vec!["libclang.lib", "clangBasic.lib"]
     } else {
-        "libclang.a"
+        vec!["libclang.a", "libclangBasic.a"]
     };
 
-    let files = common::search_libclang_directories(&[name.into()], "LIBCLANG_STATIC_PATH");
-    if let Some((directory, _)) = files.into_iter().next() {
+    let files = common::search_libclang_directories(
+        &candidates.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        "LIBCLANG_STATIC_PATH",
+    );
+
+    if let Some((directory, filename)) = files.into_iter().next() {
+        // Log which marker file we found for debugging
+        println!(
+            "cargo:warning=found Clang static libraries using marker: {}",
+            filename
+        );
         directory
     } else {
         panic!(
-            "could not find the required `{name}` static library, see the \
-            README for more information on how to link to `libclang` statically: \
-            https://github.com/KyleMayes/clang-sys?tab=readme-ov-file#static"
+            "could not find Clang static libraries (searched for {} or component libraries), \
+            set LIBCLANG_STATIC_PATH to the directory containing libclang*.a files, see the \
+            README for more information: \
+            https://github.com/KyleMayes/clang-sys?tab=readme-ov-file#static",
+            candidates.join(" or ")
         );
     }
 }
@@ -113,7 +135,7 @@ pub fn link() {
 
     // Determine the shared mode used by LLVM.
     let mode = common::run_llvm_config(&["--shared-mode"]).map(|m| m.trim().to_owned());
-    let prefix = if mode.map_or(false, |m| m == "static") {
+    let prefix = if mode.is_some_and(|m| m == "static") {
         "static="
     } else {
         ""

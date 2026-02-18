@@ -3,7 +3,7 @@
 [![Crate](https://img.shields.io/crates/v/clang-sys.svg)](https://crates.io/crates/clang-sys)
 [![Documentation](https://docs.rs/clang-sys/badge.svg)](https://docs.rs/clang-sys)
 [![CI](https://img.shields.io/github/actions/workflow/status/KyleMayes/clang-sys/ci.yml?branch=master)](https://github.com/KyleMayes/clang-sys/actions?query=workflow%3ACI)
-![MSRV](https://img.shields.io/badge/MSRV-1.60.0-blue)
+![MSRV](https://img.shields.io/badge/MSRV-1.93.0-blue)
 
 Rust bindings for `libclang`.
 
@@ -13,7 +13,7 @@ Released under the Apache License 2.0.
 
 ## [Documentation](https://docs.rs/clang-sys)
 
-Note that the documentation on https://docs.rs for this crate assumes usage of the `runtime` Cargo feature as well as the Cargo feature for the latest supported version of `libclang` (e.g., `clang_16_0`), neither of which are enabled by default.
+Note that the documentation on https://docs.rs for this crate assumes usage of the `runtime` Cargo feature as well as the Cargo feature for the latest supported version of `libclang` (e.g., `clang_23_0`), neither of which are enabled by default.
 
 Due to the usage of the `runtime` Cargo feature, this documentation will contain some additional types and functions to manage a dynamically loaded `libclang` instance at runtime.
 
@@ -21,13 +21,18 @@ Due to the usage of the Cargo feature for the latest supported version of `libcl
 
 ## Supported Versions
 
-To target a version of `libclang`, enable a Cargo features such as one of the following:
+To target a version of `libclang`, enable one of the following Cargo features:
 
 * `clang_3_5` - requires `libclang` 3.5 or later
 * `clang_3_6` - requires `libclang` 3.6 or later
 * etc...
 * `clang_17_0` - requires `libclang` 17.0 or later
 * `clang_18_0` - requires `libclang` 18.0 or later
+* `clang_19_0` - requires `libclang` 19.0 or later
+* `clang_20_0` - requires `libclang` 20.0 or later
+* `clang_21_0` - requires `libclang` 21.0 or later
+* `clang_22_0` - requires `libclang` 22.0 or later
+* `clang_23_0` - requires `libclang` 23.0 or later
 
 If you do not enable one of these features, the API provided by `libclang` 3.5 will be available by default.
 
@@ -64,14 +69,27 @@ The following environment variables, if set, are used by this crate to find the 
 * `LIBCLANG_STATIC_PATH` **(compiletime)** - provides a path to a directory containing LLVM and Clang static libraries
 * `CLANG_PATH` **(runtime)** - provides a path to a `clang` executable
 
+In most cases you should not need to set any of these. The build script will auto-detect LLVM installations from common locations (see below). These variables are available as overrides when the auto-detection picks the wrong installation or when LLVM is installed somewhere non-standard.
+
 ## Linking
+
+### Auto-detection
+
+The build script will automatically search for `llvm-config` in well-known platform-specific locations:
+
+* **macOS:** Homebrew (`/opt/homebrew/opt/llvm*/bin/llvm-config` on Apple Silicon, `/usr/local/opt/llvm*/bin/llvm-config` on Intel), MacPorts (`/opt/local/libexec/llvm-*/bin/llvm-config`)
+* **Linux/FreeBSD:** System packages (`/usr/bin/llvm-config-*`, `/usr/lib/llvm-*/bin/llvm-config`), manual installs (`/usr/local/llvm*/bin/llvm-config`)
+* **Windows:** `C:\Program Files\LLVM\bin\llvm-config.exe`
+* **illumos:** `/opt/ooce/llvm-*/bin/llvm-config`
+
+When a `clang_X_0` feature is enabled, the build script will prefer the LLVM installation whose major version matches. For example, building with `--features clang_19_0` will select `llvm-config` from an LLVM 19 installation even if a newer version is also present. If no exact match is found, the highest available version is used as a fallback.
 
 ### Dynamic
 
 `libclang` shared libraries will be searched for in the following directories:
 
 * the directory provided by the `LIBCLANG_PATH` environment variable
-* the `bin` and `lib` directories in the directory provided by `llvm-config --libdir`
+* the `bin` and `lib` directories in the directory provided by `llvm-config --prefix`
 * the directories provided by `LD_LIBRARY_PATH` environment variable
 * a list of likely directories for the target platform (e.g., `/usr/local/lib` on Linux)
 * **macOS only:** the toolchain directory in the directory provided by `xcode-select --print-path`
@@ -82,14 +100,16 @@ On Windows, running an executable that has been dynamically linked to `libclang`
 
 ### Static
 
-The availability of `llvm-config` is not optional for static linking. Ensure that an instance of this executable can be found on your system's path or set the `LLVM_CONFIG_PATH` environment variable. The required LLVM and Clang static libraries will be searched for in the same way as shared libraries are searched for, except the `LIBCLANG_STATIC_PATH` environment variable is used in place of the `LIBCLANG_PATH` environment variable.
+The availability of `llvm-config` is required for static linking. The build script will attempt to find it automatically (see [Auto-detection](#auto-detection) above). If auto-detection fails, set the `LLVM_CONFIG_PATH` environment variable. The required LLVM and Clang static libraries will be searched for in the same way as shared libraries are searched for, except the `LIBCLANG_STATIC_PATH` environment variable is used in place of the `LIBCLANG_PATH` environment variable.
+
+Modern LLVM installations (especially from package managers like Homebrew) split Clang into component static libraries rather than providing a single `libclang.a`. The build script handles both styles: it looks for `libclang.a` (monolithic) or `libclangBasic.a` (component) and links whichever is available.
 
 **Note:** The `libcpp` Cargo feature can be used to enable linking to `libc++` instead of `libstd++` when linking to `libclang` statically on Linux or Haiku.
 
 #### Static Library Availability
 
-Linking to `libclang` statically on *nix systems requires that the `libclang.a` static library be available.  
-This library is usually *not* included in most distributions of LLVM and Clang (e.g., `libclang-dev` on Debian-based systems).  
+Linking to `libclang` statically on *nix systems requires that the `libclang.a` static library be available.
+This library is usually *not* included in most distributions of LLVM and Clang (e.g., `libclang-dev` on Debian-based systems).
 If you need to link to `libclang` statically then most likely the only consistent way to get your hands on `libclang.a` is to build it yourself.
 
 Here's an example of building the required static libraries and using them with `clang-sys`:
@@ -108,7 +128,7 @@ cd clang-sys
 LLVM_CONFIG_PATH=../llvm-project/build/bin/llvm-config cargo test --features static
 ```
 
-Linking to `libclang` statically requires linking a large number of big static libraries.  
+Linking to `libclang` statically requires linking a large number of big static libraries.
 Using [`rust-lld` as a linker](https://blog.rust-lang.org/2024/05/17/enabling-rust-lld-on-linux.html) can greatly reduce linking times.
 
 ### Runtime

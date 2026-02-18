@@ -20,7 +20,15 @@
 //! minimum `libclang` version required to use the item.
 
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
-#![cfg_attr(feature = "cargo-clippy", allow(clippy::unreadable_literal))]
+#![allow(clippy::unreadable_literal)]
+
+#[cfg(all(feature = "runtime", feature = "static"))]
+compile_error!("The `runtime` and `static` features are mutually exclusive");
+
+#[cfg(all(feature = "runtime", feature = "static"))]
+compile_error!(
+    "Choose one: `runtime` for dynamic runtime linking, `static` for static linking, or neither for build-time dynamic linking"
+);
 
 pub mod support;
 
@@ -1114,7 +1122,7 @@ cenum! {
         /// Only produced by `libclang` 11.0 and later.
         const CXType_Atomic = 177,
         /// Only produced by `libclang` 15.0 and later.
-        const CXType_BTFTagAttributed = 178,        
+        const CXType_BTFTagAttributed = 178,
     }
 }
 
@@ -1204,6 +1212,110 @@ cenum! {
         const CX_SC_OpenCLWorkGroupLocal = 5,
         const CX_SC_Auto = 6,
         const CX_SC_Register = 7,
+    }
+}
+
+cenum! {
+    /// Binary operator kinds that can appear in C/C++ code.
+    ///
+    /// This enum represents the different types of binary operators that can be
+    /// queried from a cursor representing a binary operator expression. It covers
+    /// arithmetic, comparison, logical, bitwise, and assignment operators.
+    ///
+    /// Only available on `libclang` 19.0 and later.
+    ///
+    /// # Usage
+    ///
+    /// Use with [`clang_Cursor_getBinaryOpcode`] to determine which operator
+    /// a binary expression cursor represents.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use clang_sys::*;
+    ///
+    /// unsafe fn check_operator(cursor: CXCursor) {
+    ///     let opcode = clang_Cursor_getBinaryOpcode(cursor);
+    ///     match opcode {
+    ///         CX_BO_Add => println!("Addition operator"),
+    ///         CX_BO_Mul => println!("Multiplication operator"),
+    ///         CX_BO_Assign => println!("Assignment operator"),
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    #[cfg(feature = "clang_19_0")]
+    enum CX_BinaryOperatorKind {
+        /// Invalid or not a binary operator
+        const CX_BO_Invalid = 0,
+        /// Pointer-to-member (C++): `.*`
+        const CX_BO_PtrMemD = 1,
+        /// Pointer-to-member (C++): `->*`
+        const CX_BO_PtrMemI = 2,
+        /// Multiplication: `*`
+        const CX_BO_Mul = 3,
+        /// Division: `/`
+        const CX_BO_Div = 4,
+        /// Remainder (modulo): `%`
+        const CX_BO_Rem = 5,
+        /// Addition: `+`
+        const CX_BO_Add = 6,
+        /// Subtraction: `-`
+        const CX_BO_Sub = 7,
+        /// Bitwise left shift: `<<`
+        const CX_BO_Shl = 8,
+        /// Bitwise right shift: `>>`
+        const CX_BO_Shr = 9,
+        /// Three-way comparison (C++20): `<=>`
+        const CX_BO_Cmp = 10,
+        /// Less than: `<`
+        const CX_BO_LT = 11,
+        /// Greater than: `>`
+        const CX_BO_GT = 12,
+        /// Less than or equal: `<=`
+        const CX_BO_LE = 13,
+        /// Greater than or equal: `>=`
+        const CX_BO_GE = 14,
+        /// Equal to: `==`
+        const CX_BO_EQ = 15,
+        /// Not equal to: `!=`
+        const CX_BO_NE = 16,
+        /// Bitwise AND: `&`
+        const CX_BO_And = 17,
+        /// Bitwise XOR: `^`
+        const CX_BO_Xor = 18,
+        /// Bitwise OR: `|`
+        const CX_BO_Or = 19,
+        /// Logical AND: `&&`
+        const CX_BO_LAnd = 20,
+        /// Logical OR: `||`
+        const CX_BO_LOr = 21,
+        /// Assignment: `=`
+        const CX_BO_Assign = 22,
+        /// Multiply and assign: `*=`
+        const CX_BO_MulAssign = 23,
+        /// Divide and assign: `/=`
+        const CX_BO_DivAssign = 24,
+        /// Remainder and assign: `%=`
+        const CX_BO_RemAssign = 25,
+        /// Add and assign: `+=`
+        const CX_BO_AddAssign = 26,
+        /// Subtract and assign: `-=`
+        const CX_BO_SubAssign = 27,
+        /// Left shift and assign: `<<=`
+        const CX_BO_ShlAssign = 28,
+        /// Right shift and assign: `>>=`
+        const CX_BO_ShrAssign = 29,
+        /// Bitwise AND and assign: `&=`
+        const CX_BO_AndAssign = 30,
+        /// Bitwise XOR and assign: `^=`
+        const CX_BO_XorAssign = 31,
+        /// Bitwise OR and assign: `|=`
+        const CX_BO_OrAssign = 32,
+        /// Comma operator: `,`
+        const CX_BO_Comma = 33,
+        /// Last operator (for iteration bounds)
+        const CX_BO_LAST = 33,
     }
 }
 
@@ -2010,6 +2122,39 @@ link! {
     pub fn clang_Cursor_isNull(cursor: CXCursor) -> c_int;
     pub fn clang_Cursor_isObjCOptional(cursor: CXCursor) -> c_uint;
     pub fn clang_Cursor_isVariadic(cursor: CXCursor) -> c_uint;
+    /// Only available on `libclang` 19.0 and later.
+    #[cfg(feature = "clang_19_0")]
+    pub fn clang_Cursor_getBinaryOpcode(cursor: CXCursor) -> CX_BinaryOperatorKind;
+    /// Only available on `libclang` 19.0 and later.
+    #[cfg(feature = "clang_19_0")]
+    pub fn clang_Cursor_getBinaryOpcodeStr(op: CX_BinaryOperatorKind) -> CXString;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyTemplate(cursor: CXCursor) -> CXString;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_isGCCAssemblyHasGoto(cursor: CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyNumOutputs(cursor: CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyNumInputs(cursor: CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyInput(cursor: CXCursor, index: c_uint, name: *mut CXString, constraint: *mut CXString, expr: *mut CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyOutput(cursor: CXCursor, index: c_uint, name: *mut CXString, constraint: *mut CXString, expr: *mut CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyNumClobbers(cursor: CXCursor) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_getGCCAssemblyClobber(cursor: CXCursor, index: c_uint) -> CXString;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_Cursor_isGCCAssemblyVolatile(cursor: CXCursor) -> c_uint;
     /// Only available on `libclang` 5.0 and later.
     #[cfg(feature = "clang_5_0")]
     pub fn clang_EnumDecl_isScoped(cursor: CXCursor) -> c_uint;
@@ -2116,6 +2261,12 @@ link! {
     /// Only available on `libclang` 3.7 and later.
     #[cfg(feature = "clang_3_7")]
     pub fn clang_Type_visitFields(type_: CXType, visitor: CXFieldVisitor, data: CXClientData) -> CXVisitorResult;
+    /// Only available on `libclang` 20.0 and later.
+    #[cfg(feature = "clang_20_0")]
+    pub fn clang_visitCXXBaseClasses(type_: CXType, visitor: CXCursorVisitor, data: CXClientData) -> c_uint;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_visitCXXMethods(type_: CXType, visitor: CXFieldVisitor, data: CXClientData) -> c_uint;
     pub fn clang_annotateTokens(tu: CXTranslationUnit, tokens: *mut CXToken, n_tokens: c_uint, cursors: *mut CXCursor);
     pub fn clang_codeCompleteAt(tu: CXTranslationUnit, file: *const c_char, line: c_uint, column: c_uint, unsaved: *mut CXUnsavedFile, n_unsaved: c_uint, flags: CXCodeComplete_Flags) -> *mut CXCodeCompleteResults;
     pub fn clang_codeCompleteGetContainerKind(results: *mut CXCodeCompleteResults, incomplete: *mut c_uint) -> CXCursorKind;
@@ -2163,7 +2314,7 @@ link! {
     pub fn clang_equalLocations(left: CXSourceLocation, right: CXSourceLocation) -> c_uint;
     pub fn clang_equalRanges(left: CXSourceRange, right: CXSourceRange) -> c_uint;
     pub fn clang_equalTypes(left: CXType, right: CXType) -> c_uint;
-    pub fn clang_executeOnThread(function: extern fn(*mut c_void), data: *mut c_void, stack: c_uint);
+    pub fn clang_executeOnThread(function: extern "C" fn(*mut c_void), data: *mut c_void, stack: c_uint);
     pub fn clang_findIncludesInFile(tu: CXTranslationUnit, file: CXFile, cursor: CXCursorAndRangeVisitor) -> CXResult;
     pub fn clang_findReferencesInFile(cursor: CXCursor, file: CXFile, visitor: CXCursorAndRangeVisitor) -> CXResult;
     pub fn clang_formatDiagnostic(diagnostic: CXDiagnostic, flags: CXDiagnosticDisplayOptions) -> CXString;
@@ -2271,6 +2422,9 @@ link! {
     pub fn clang_getExpansionLocation(location: CXSourceLocation, file: *mut CXFile, line: *mut c_uint, column: *mut c_uint, offset: *mut c_uint);
     pub fn clang_getFieldDeclBitWidth(cursor: CXCursor) -> c_int;
     pub fn clang_getFile(tu: CXTranslationUnit, file: *const c_char) -> CXFile;
+    /// Only available on `libclang` 21.0 and later.
+    #[cfg(feature = "clang_21_0")]
+    pub fn clang_getFullyQualifiedName(cursor: CXCursor) -> CXString;
     /// Only available on `libclang` 6.0 and later.
     #[cfg(feature = "clang_6_0")]
     pub fn clang_getFileContents(tu: CXTranslationUnit, file: CXFile, size: *mut size_t) -> *const c_char;
@@ -2336,6 +2490,12 @@ link! {
     /// Only available on `libclang` 5.0 and later.
     #[cfg(feature = "clang_5_0")]
     pub fn clang_getTypedefName(type_: CXType) -> CXString;
+    /// Only available on `libclang` 20.0 and later.
+    #[cfg(feature = "clang_20_0")]
+    pub fn clang_getTypePrettyPrinted(type_: CXType, policy: CXPrintingPolicy) -> CXString;
+    /// Only available on `libclang` 20.0 and later.
+    #[cfg(feature = "clang_20_0")]
+    pub fn clang_getOffsetOfBase(parent: CXCursor, base: CXCursor) -> c_longlong;
     pub fn clang_hashCursor(cursor: CXCursor) -> c_uint;
     pub fn clang_indexLoc_getCXSourceLocation(location: CXIdxLoc) -> CXSourceLocation;
     pub fn clang_indexLoc_getFileLocation(location: CXIdxLoc, index_file: *mut CXIdxClientFile, file: *mut CXFile, line: *mut c_uint, column: *mut c_uint, offset: *mut c_uint);

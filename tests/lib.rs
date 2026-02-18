@@ -2,8 +2,6 @@ use std::ptr;
 
 use clang_sys::*;
 
-use libc::c_char;
-
 fn parse() {
     unsafe {
         let index = clang_createIndex(0, 0);
@@ -11,7 +9,7 @@ fn parse() {
 
         let tu = clang_parseTranslationUnit(
             index,
-            "tests/header.h\0".as_ptr() as *const c_char,
+            c"tests/header.h".as_ptr(),
             ptr::null_mut(),
             0,
             ptr::null_mut(),
