@@ -52,7 +52,10 @@ fn main() {
     use std::env;
 
     if cfg!(feature = "static") {
-        panic!("`runtime` and `static` features can't be combined");
+        println!(
+            "cargo:warning=Both `runtime` and `static` features are enabled; \
+             `runtime` takes priority (`static` is ignored)"
+        );
     }
 
     let out = env::var("OUT_DIR").unwrap();
